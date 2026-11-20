@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace MESFileProcessor
@@ -9,11 +10,13 @@ namespace MESFileProcessor
         private TextBox txtStationName;
         private TextBox txtStationId;
         private TextBox txtNcCode;
+        private TextBox txtComponentNames;
         private Button btnSave;
         private Button btnCancel;
         private Label lblStationName;
         private Label lblStationId;
         private Label lblNcCode;
+        private Label lblComponentNames;
 
         public Config CurrentConfig { get; private set; }
 
@@ -26,7 +29,8 @@ namespace MESFileProcessor
                 LineName = config.LineName,
                 StationName = config.StationName,
                 StationId = config.StationId,
-                NcCode = config.NcCode
+                NcCode = config.NcCode,
+                ComponentNames = config.ComponentNames
             };
 
             InitializeComponent();
@@ -38,16 +42,18 @@ namespace MESFileProcessor
             txtStationName = new TextBox();
             txtStationId = new TextBox();
             txtNcCode = new TextBox();
+            txtComponentNames = new TextBox();
             btnSave = new Button();
             btnCancel = new Button();
             lblStationName = new Label();
             lblStationId = new Label();
             lblNcCode = new Label();
+            lblComponentNames = new Label();
 
             SuspendLayout();
 
             Text = "程序配置";
-            Size = new Size(480, 330);
+            Size = new Size(480, 380);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -61,9 +67,11 @@ namespace MESFileProcessor
             ConfigureTextBox(txtStationId, 85);
             ConfigureLabel(lblNcCode, "不良代码:", 140);
             ConfigureTextBox(txtNcCode, 140);
+            ConfigureLabel(lblComponentNames, "组件信息:", 195);
+            ConfigureTextBox(txtComponentNames, 195);
 
             btnSave.Text = "保存";
-            btnSave.Location = new Point(250, 215);
+            btnSave.Location = new Point(250, 270);
             btnSave.Size = new Size(85, 35);
             btnSave.UseVisualStyleBackColor = true;
             btnSave.BackColor = Color.FromArgb(34, 139, 34);
@@ -73,7 +81,7 @@ namespace MESFileProcessor
             btnSave.Click += new EventHandler(btnSave_Click);
 
             btnCancel.Text = "取消";
-            btnCancel.Location = new Point(345, 215);
+            btnCancel.Location = new Point(345, 270);
             btnCancel.Size = new Size(85, 35);
             btnCancel.UseVisualStyleBackColor = true;
             btnCancel.BackColor = Color.FromArgb(220, 20, 60);
@@ -88,6 +96,8 @@ namespace MESFileProcessor
             Controls.Add(txtStationId);
             Controls.Add(lblNcCode);
             Controls.Add(txtNcCode);
+            Controls.Add(lblComponentNames);
+            Controls.Add(txtComponentNames);
             Controls.Add(btnSave);
             Controls.Add(btnCancel);
 
@@ -116,6 +126,7 @@ namespace MESFileProcessor
             txtStationName.Text = CurrentConfig.StationName;
             txtStationId.Text = CurrentConfig.StationId;
             txtNcCode.Text = CurrentConfig.NcCode;
+            txtComponentNames.Text = CurrentConfig.ComponentNames;
         }
 
         private void btnSave_Click(object sender, EventArgs e)
@@ -143,9 +154,19 @@ namespace MESFileProcessor
                     return;
                 }
 
+                if (string.IsNullOrWhiteSpace(txtComponentNames.Text) ||
+                    txtComponentNames.Text.Split(';').Any(name => string.IsNullOrWhiteSpace(name) ||
+                        !name.Trim().EndsWith("_BC", StringComparison.OrdinalIgnoreCase)))
+                {
+                    MessageBox.Show("请输入以_BC结尾的组件信息名称，多个名称用英文分号分隔", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    txtComponentNames.Focus();
+                    return;
+                }
+
                 CurrentConfig.StationName = txtStationName.Text.Trim();
                 CurrentConfig.StationId = txtStationId.Text.Trim();
                 CurrentConfig.NcCode = txtNcCode.Text.Trim();
+                CurrentConfig.ComponentNames = txtComponentNames.Text.Trim();
                 ConfigManager.SaveConfig(CurrentConfig);
 
                 DialogResult = DialogResult.OK;

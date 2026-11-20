@@ -257,7 +257,7 @@ namespace MESFileProcessor
         {
             string[] errorMarkers =
             {
-                "失败", "异常", "错误", "缺少", "无法", "无效", "不支持", "不存在", "【API异常】"
+                "失败", "异常", "错误", "缺少", "没有", "无法", "无效", "不支持", "不存在", "【API异常】"
             };
 
             return errorMarkers.Any(marker => message.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0);
@@ -374,6 +374,12 @@ namespace MESFileProcessor
                 if (string.IsNullOrWhiteSpace(currentConfig.NcCode))
                 {
                     MessageBox.Show("请先配置不良代码", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(currentConfig.ComponentNames))
+                {
+                    MessageBox.Show("请先配置组件信息名称", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 

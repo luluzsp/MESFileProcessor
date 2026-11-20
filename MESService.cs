@@ -4,12 +4,14 @@ using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace MESFileProcessor
 {
     public class MESService
     {
         public const string MesApiUrl = "http://10.131.30.150:20009/zjyt/exi/me/bobcat";
+        public const string ComponentApiUrl = "http://10.131.30.150:20010/Service.action";
 
         private static readonly HttpClient httpClient = new HttpClient
         {
@@ -21,6 +23,82 @@ namespace MESFileProcessor
             public bool Success { get; set; }
             public string ResponseContent { get; set; }
             public string ErrorMessage { get; set; }
+        }
+
+        public class SerializeDataResponse
+        {
+            public List<OldSfcData> OLDSFC_DATA { get; set; }
+            public string RESULT { get; set; }
+        }
+
+        public class OldSfcData
+        {
+            public string shoporder { get; set; }
+        }
+
+        public static async Task<SerializeDataResponse> GetSerializeData(string sn, Action<string> logCallback)
+        {
+            string parameters = JsonConvert.SerializeObject(new { LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn });
+            string response = await ExecuteComponentPost("GetSerializeData", parameters, logCallback);
+            if (response == null) return null;
+            try { return JsonConvert.DeserializeObject<SerializeDataResponse>(response); }
+            catch (Exception ex)
+            {
+                WriteUiLog(logCallback, "GetSerializeData响应解析失败: " + ex.Message);
+                LogManager.WriteErrorLog("GetSerializeData响应解析失败", ex);
+                return null;
+            }
+        }
+
+        public static async Task<bool> AddSfcKey(string sn, string stationName, string shoporder,
+            string dataName, string dataValue, Action<string> logCallback)
+        {
+            string parameters = JsonConvert.SerializeObject(new
+            {
+                LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn, STATION_NAME = stationName,
+                SHOPORDER = shoporder, DATA_NAME = dataName, DATA_VALUE = dataValue,
+                IS_FINISH = "1", QTY = "0", IS_UPDATE = true
+            });
+            string response = await ExecuteComponentPost("AddSfcKey", parameters, logCallback);
+            if (response == null) return false;
+            try
+            {
+                var result = JsonConvert.DeserializeObject<AddSfcKeyResponse>(response);
+                return result != null && string.Equals(result.RESULT, "PASS", StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                WriteUiLog(logCallback, "AddSfcKey响应解析失败: " + ex.Message);
+                LogManager.WriteErrorLog("AddSfcKey响应解析失败", ex);
+                return false;
+            }
+        }
+
+        private class AddSfcKeyResponse { public string RESULT { get; set; } }
+
+        private static async Task<string> ExecuteComponentPost(string method, string parameters, Action<string> logCallback)
+        {
+            string url = ComponentApiUrl + "?method=" + method + "&param=" + Uri.EscapeDataString(parameters);
+            try
+            {
+                WriteUiLog(logCallback, string.Format("【{0}请求URL】{1}", method, url));
+                using (var body = new StringContent("", Encoding.UTF8, "application/json"))
+                using (var response = await httpClient.PostAsync(url, body))
+                {
+                    string content = await response.Content.ReadAsStringAsync();
+                    LogManager.WriteApiLog(url, parameters, content);
+                    WriteUiLog(logCallback, string.Format("【{0}响应】HTTP {1}: {2}", method, (int)response.StatusCode, LimitLogText(content)));
+                    if (response.IsSuccessStatusCode) return content;
+                    WriteUiLog(logCallback, string.Format("{0}接口失败: HTTP {1}", method, (int)response.StatusCode));
+                    return null;
+                }
+            }
+            catch (Exception ex)
+            {
+                WriteUiLog(logCallback, string.Format("{0}接口异常: {1}", method, ex.Message));
+                LogManager.WriteErrorLog(method + "接口异常", ex);
+                return null;
+            }
         }
 
         public static Task<MesApiResponse> StartProduct(

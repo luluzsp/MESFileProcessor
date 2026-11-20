@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Xml;
 
@@ -159,10 +161,11 @@ namespace MESFileProcessor
             string fileName = Path.GetFileName(filePath);
             string sn;
             string panelResult;
+            Dictionary<string, string> components;
 
             try
             {
-                ReadXmlFields(filePath, out sn, out panelResult);
+                ReadXmlFields(filePath, out sn, out panelResult, out components);
             }
             catch (Exception ex)
             {
@@ -190,6 +193,23 @@ namespace MESFileProcessor
             {
                 FailXml(filePath, string.Format("XML测试结果不支持: PanleResult={0}，仅支持GOOD、PASS或NG", panelResult));
                 return;
+            }
+
+            foreach (string requiredName in (config.ComponentNames ?? string.Empty)
+                .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(name => name.Trim()).Where(name => name.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string componentValue;
+                if (!requiredName.EndsWith("_BC", StringComparison.OrdinalIgnoreCase) ||
+                    !components.TryGetValue(requiredName, out componentValue) ||
+                    string.IsNullOrWhiteSpace(componentValue))
+                {
+                    string reason = string.Format("{0}文件中没有{1}组件信息", fileName, requiredName);
+                    logCallback(reason);
+                    LogManager.WriteLog("组件信息缺少", reason);
+                    MoveToErrorFolder(filePath, reason);
+                    return;
+                }
             }
 
             string parsedMessage = string.Format("解析XML成功: 文件={0}, SN={1}, PanleResult={2}", fileName, sn, panelResult);
@@ -249,13 +269,45 @@ namespace MESFileProcessor
             string successReason = string.Format("START和{0}接口调用成功，SN={1}", finalApiName, sn);
             logCallback(successReason);
             LogManager.WriteLog("MES过站成功", successReason);
+
+            if (components.Count > 0)
+            {
+                // 工单查询和组件上传属于过站后的附加步骤，不改变过站结果。
+                var serialized = await MESService.GetSerializeData(sn, logCallback);
+                string shoporder = serialized == null || serialized.OLDSFC_DATA == null
+                    ? null
+                    : serialized.OLDSFC_DATA.Select(item => item.shoporder)
+                        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+                if (string.IsNullOrWhiteSpace(shoporder))
+                {
+                    string message = string.Format("GetSerializeData失败或缺少SHOPORDER: 文件={0}, SN={1}，跳过组件上传", fileName, sn);
+                    logCallback(message);
+                    LogManager.WriteLog("组件上传失败", message);
+                }
+                else
+                {
+                    foreach (var component in components.Where(item => !string.IsNullOrWhiteSpace(item.Value)))
+                    {
+                        bool uploaded = await MESService.AddSfcKey(sn, config.StationName, shoporder,
+                            component.Key, component.Value, logCallback);
+                        if (!uploaded)
+                        {
+                            string message = string.Format("AddSfcKey失败: 文件={0}, SN={1}, DATA_NAME={2}", fileName, sn, component.Key);
+                            logCallback(message);
+                            LogManager.WriteLog("组件上传失败", message);
+                        }
+                    }
+                }
+            }
             MoveToPassFolder(filePath, successReason);
         }
 
-        private static void ReadXmlFields(string filePath, out string sn, out string panelResult)
+        private static void ReadXmlFields(string filePath, out string sn, out string panelResult,
+            out Dictionary<string, string> components)
         {
             sn = null;
             panelResult = null;
+            components = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             XmlReaderSettings settings = new XmlReaderSettings
             {
@@ -273,10 +325,6 @@ namespace MESFileProcessor
                         string.Equals(reader.LocalName, "Lotid", StringComparison.OrdinalIgnoreCase))
                     {
                         sn = reader.ReadElementContentAsString();
-                        if (panelResult != null)
-                        {
-                            break;
-                        }
                         continue;
                     }
 
@@ -284,9 +332,17 @@ namespace MESFileProcessor
                         string.Equals(reader.LocalName, "PanleResult", StringComparison.OrdinalIgnoreCase))
                     {
                         panelResult = reader.ReadElementContentAsString();
-                        if (sn != null)
+                        continue;
+                    }
+
+                    if (reader.NodeType == XmlNodeType.Element &&
+                        reader.LocalName.EndsWith("_BC", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string name = reader.LocalName;
+                        string value = reader.ReadElementContentAsString().Trim();
+                        if (!components.ContainsKey(name) || string.IsNullOrWhiteSpace(components[name]))
                         {
-                            break;
+                            components[name] = value;
                         }
                         continue;
                     }
