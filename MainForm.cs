@@ -29,7 +29,7 @@ namespace MESFileProcessor
             InitializeComponent();
             UpdateConfigDisplay();
             
-            LogManager.WriteLog("程序启动", "MES文件处理程序启动");
+            LogManager.WriteLog("程序启动", "成都汽车电子项目X-Ray数据上传软件V1.1启动");
         }
         
         private void InitializeComponent()
@@ -159,7 +159,7 @@ namespace MESFileProcessor
             this.lblProgramInfo.Name = "lblProgramInfo";
             this.lblProgramInfo.Size = new System.Drawing.Size(850, 42);
             this.lblProgramInfo.TabIndex = 11;
-            this.lblProgramInfo.Text = "UF-AOI数据上传程序 V1.0";
+            this.lblProgramInfo.Text = "成都汽车电子项目X-Ray数据上传软件V1.1";
             this.lblProgramInfo.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // lblDataPath
@@ -211,7 +211,7 @@ namespace MESFileProcessor
             this.MinimumSize = new System.Drawing.Size(900, 650);
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "UF-AOI数据上传程序";
+            this.Text = "成都汽车电子项目X-Ray数据上传软件V1.1";
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -231,15 +231,36 @@ namespace MESFileProcessor
             }
             
             string logEntry = string.Format("[{0:HH:mm:ss}] {1}", DateTime.Now, message);
+            rtbLog.SelectionStart = rtbLog.TextLength;
+            rtbLog.SelectionLength = 0;
+            rtbLog.SelectionColor = IsErrorLog(message) ? Color.FromArgb(255, 90, 90) : rtbLog.ForeColor;
             rtbLog.AppendText(logEntry + Environment.NewLine);
+            rtbLog.SelectionColor = rtbLog.ForeColor;
             rtbLog.ScrollToCaret();
             
             // 限制日志行数为500行，防止数据量过大导致程序崩溃
             if (rtbLog.Lines.Length > 500)
             {
-                var lines = rtbLog.Lines.Skip(100).ToArray(); // 删除前100行，保留最新400行
-                rtbLog.Lines = lines;
+                // 直接删除旧文本，保留剩余日志各行的颜色。
+                int removeLength = rtbLog.GetFirstCharIndexFromLine(100);
+                if (removeLength > 0)
+                {
+                    rtbLog.Select(0, removeLength);
+                    rtbLog.SelectedText = string.Empty;
+                    rtbLog.SelectionStart = rtbLog.TextLength;
+                    rtbLog.SelectionColor = rtbLog.ForeColor;
+                }
             }
+        }
+
+        private static bool IsErrorLog(string message)
+        {
+            string[] errorMarkers =
+            {
+                "失败", "异常", "错误", "缺少", "无法", "无效", "不支持", "不存在", "【API异常】"
+            };
+
+            return errorMarkers.Any(marker => message.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0);
         }
         
         private void btnSelectDataPath_Click(object sender, EventArgs e)
@@ -338,21 +359,21 @@ namespace MESFileProcessor
                     return;
                 }
                 
-                if (string.IsNullOrWhiteSpace(currentConfig.MesUrl))
-                {
-                    MessageBox.Show("请先配置MES网址", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                
                 if (string.IsNullOrWhiteSpace(currentConfig.StationName))
                 {
                     MessageBox.Show("请先配置工站名称", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 
-                if (string.IsNullOrWhiteSpace(currentConfig.LineName))
+                if (string.IsNullOrWhiteSpace(currentConfig.StationId))
                 {
-                    MessageBox.Show("请先配置线体名称", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("请先配置工站ID", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(currentConfig.NcCode))
+                {
+                    MessageBox.Show("请先配置不良代码", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
                 
@@ -411,7 +432,7 @@ namespace MESFileProcessor
                 StopMonitoring();
             }
             
-            LogManager.WriteLog("程序关闭", "MES文件处理程序关闭");
+            LogManager.WriteLog("程序关闭", "成都汽车电子项目X-Ray数据上传软件V1.1关闭");
             base.OnFormClosing(e);
         }
         

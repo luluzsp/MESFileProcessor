@@ -1,7 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
-using System.Linq;
 using System.Threading.Tasks;
+using System.Xml;
 
 namespace MESFileProcessor
 {
@@ -12,7 +13,8 @@ namespace MESFileProcessor
         private readonly string outputPath;
         private readonly Config config;
         private readonly Action<string> logCallback;
-        
+        private readonly ConcurrentDictionary<string, byte> processingFiles = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+
         public FileWatcher(string watchPath, string outputPath, Config config, Action<string> logCallback)
         {
             this.watchPath = watchPath;
@@ -20,7 +22,7 @@ namespace MESFileProcessor
             this.config = config;
             this.logCallback = logCallback;
         }
-        
+
         public void Start()
         {
             if (string.IsNullOrEmpty(watchPath) || !Directory.Exists(watchPath))
@@ -28,30 +30,26 @@ namespace MESFileProcessor
                 logCallback("监控路径无效或不存在");
                 return;
             }
-            
+
             if (string.IsNullOrEmpty(outputPath) || !Directory.Exists(outputPath))
             {
                 logCallback("输出路径无效或不存在");
                 return;
             }
-            
-            // 确保输出目录下有必要的子文件夹
+
             EnsureDirectories();
-            
-            // 处理已存在的文件
             ProcessExistingFiles();
-            
+
             watcher = new FileSystemWatcher(watchPath);
             watcher.NotifyFilter = NotifyFilters.CreationTime | NotifyFilters.LastWrite | NotifyFilters.FileName;
-            watcher.EnableRaisingEvents = true;
-            
             watcher.Created += OnFileCreated;
             watcher.Changed += OnFileChanged;
-            
-            logCallback(string.Format("开始监控文件夹: {0}", watchPath));
+            watcher.EnableRaisingEvents = true;
+
+            logCallback(string.Format("开始监控XML文件夹: {0}", watchPath));
             LogManager.WriteLog("文件监控启动", watchPath);
         }
-        
+
         private void ProcessExistingFiles()
         {
             try
@@ -62,7 +60,6 @@ namespace MESFileProcessor
                     logCallback(string.Format("发现 {0} 个已存在的文件，开始处理...", files.Length));
                     foreach (string file in files)
                     {
-                        // 异步处理每个文件
                         Task.Run(async () => await ProcessFile(file));
                     }
                 }
@@ -73,7 +70,7 @@ namespace MESFileProcessor
                 LogManager.WriteErrorLog("扫描已存在文件失败", ex);
             }
         }
-        
+
         public void Stop()
         {
             if (watcher != null)
@@ -81,12 +78,12 @@ namespace MESFileProcessor
                 watcher.EnableRaisingEvents = false;
                 watcher.Dispose();
                 watcher = null;
-                
+
                 logCallback("文件监控已停止");
-                LogManager.WriteLog("文件监控停止", "");
+                LogManager.WriteLog("文件监控停止", string.Empty);
             }
         }
-        
+
         private void EnsureDirectories()
         {
             string[] subDirs = { "fail", "pass", "error" };
@@ -100,288 +97,292 @@ namespace MESFileProcessor
                 }
             }
         }
-        
+
         private async void OnFileCreated(object sender, FileSystemEventArgs e)
         {
             await ProcessFile(e.FullPath);
         }
-        
+
         private async void OnFileChanged(object sender, FileSystemEventArgs e)
         {
-            // 延迟处理，避免文件正在写入时处理
-            await Task.Delay(1000);
             await ProcessFile(e.FullPath);
         }
-        
+
         private async Task ProcessFile(string filePath)
         {
+            if (!processingFiles.TryAdd(filePath, 0))
+            {
+                return;
+            }
+
             try
             {
+                // 等待写入方释放文件，避免读取到尚未写完的XML。
+                await Task.Delay(1000);
+
                 if (!File.Exists(filePath))
+                {
                     return;
-                
+                }
+
                 string fileName = Path.GetFileName(filePath);
-                string extension = Path.GetExtension(filePath).ToLower();
-                
+                string extension = Path.GetExtension(filePath);
+
                 logCallback(string.Format("检测到文件: {0}", fileName));
                 LogManager.WriteLog("检测到文件", filePath);
-                
-                // 检查文件扩展名
-                if (extension != ".tar")
+
+                if (!string.Equals(extension, ".xml", StringComparison.OrdinalIgnoreCase))
                 {
-                    // 检查源文件是否存在
-                    if (!File.Exists(filePath))
-                    {
-                        logCallback(string.Format("文件已被处理或不存在，跳过移动: {0}", fileName));
-                        return;
-                    }
-                    
-                    string errorPath = GetUniqueFilePath(outputPath, "error", fileName);
-                    File.Move(filePath, errorPath);
-                    
-                    string message = string.Format("文件 {0} 移动到 {1}", fileName, errorPath);
-                    logCallback(message);
-                    LogManager.WriteLog("文件移动到error", message);
+                    MoveToErrorFolder(filePath, "仅支持XML格式文件");
                     return;
                 }
-                
-                // 处理.tar文件
-                await ProcessTarFile(filePath);
+
+                await ProcessXmlFile(filePath);
             }
             catch (Exception ex)
             {
-                logCallback(string.Format("处理文件时出错: {0}", ex.Message));
+                string message = string.Format("处理文件时出错: 文件={0}, 异常={1}", filePath, ex.Message);
+                logCallback(message);
                 LogManager.WriteErrorLog("处理文件异常", ex);
+                MoveToFailFolder(filePath, message);
+            }
+            finally
+            {
+                byte ignored;
+                processingFiles.TryRemove(filePath, out ignored);
             }
         }
-        
-        private async Task ProcessTarFile(string filePath)
+
+        private async Task ProcessXmlFile(string filePath)
         {
+            DateTime processStartTime = DateTime.Now;
+            string fileName = Path.GetFileName(filePath);
+            string sn;
+            string panelResult;
+
             try
             {
-                string fileName = Path.GetFileName(filePath);
-                
-                // 解析tar文件内容
-                string sfc = null;
-                string result = null;
-                
-                // 简单的文本文件读取方式（假设tar文件实际上是文本文件或可以直接读取）
-                try
+                ReadXmlFields(filePath, out sn, out panelResult);
+            }
+            catch (Exception ex)
+            {
+                FailXml(filePath, string.Format("XML解析失败: {0}", ex.Message), ex);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(sn))
+            {
+                FailXml(filePath, "XML缺少产品SN: 未找到Lotid节点或节点内容为空");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(panelResult))
+            {
+                FailXml(filePath, "XML缺少测试结果: 未找到PanleResult节点或节点内容为空");
+                return;
+            }
+
+            sn = sn.Trim();
+            panelResult = panelResult.Trim().ToUpperInvariant();
+
+            bool isPassResult = panelResult == "GOOD" || panelResult == "PASS";
+            if (!isPassResult && panelResult != "NG")
+            {
+                FailXml(filePath, string.Format("XML测试结果不支持: PanleResult={0}，仅支持GOOD、PASS或NG", panelResult));
+                return;
+            }
+
+            string parsedMessage = string.Format("解析XML成功: 文件={0}, SN={1}, PanleResult={2}", fileName, sn, panelResult);
+            logCallback(parsedMessage);
+            LogManager.WriteLog("XML解析成功", parsedMessage);
+
+            logCallback(string.Format("【API调用】准备调用START接口，SN={0}", sn));
+            MESService.MesApiResponse startResponse = await MESService.StartProduct(
+                config.StationName,
+                config.StationId,
+                sn,
+                logCallback);
+
+            if (startResponse == null || !startResponse.Success)
+            {
+                string reason = BuildApiFailureReason("START", startResponse);
+                LogApiFailure(fileName, sn, reason);
+                MoveToFailFolder(filePath, reason);
+                return;
+            }
+
+            MESService.MesApiResponse stationResponse;
+            string finalApiName;
+
+            if (isPassResult)
+            {
+                finalApiName = "ADD_RECORD";
+                logCallback(string.Format("【API调用】START成功，准备调用ADD_RECORD接口，SN={0}", sn));
+                stationResponse = await MESService.AddRecord(
+                    config.StationName,
+                    config.StationId,
+                    sn,
+                    processStartTime,
+                    DateTime.Now,
+                    logCallback);
+            }
+            else
+            {
+                finalApiName = "LOGNC";
+                logCallback(string.Format("【API调用】START成功，准备调用LOGNC接口，SN={0}, NcCode={1}", sn, config.NcCode));
+                stationResponse = await MESService.LogNc(
+                    config.NcCode,
+                    config.StationName,
+                    config.StationId,
+                    sn,
+                    logCallback);
+            }
+
+            if (stationResponse == null || !stationResponse.Success)
+            {
+                string reason = BuildApiFailureReason(finalApiName, stationResponse);
+                LogApiFailure(fileName, sn, reason);
+                MoveToFailFolder(filePath, reason);
+                return;
+            }
+
+            string successReason = string.Format("START和{0}接口调用成功，SN={1}", finalApiName, sn);
+            logCallback(successReason);
+            LogManager.WriteLog("MES过站成功", successReason);
+            MoveToPassFolder(filePath, successReason);
+        }
+
+        private static void ReadXmlFields(string filePath, out string sn, out string panelResult)
+        {
+            sn = null;
+            panelResult = null;
+
+            XmlReaderSettings settings = new XmlReaderSettings
+            {
+                DtdProcessing = DtdProcessing.Prohibit,
+                IgnoreComments = true,
+                IgnoreWhitespace = true
+            };
+
+            using (XmlReader reader = XmlReader.Create(filePath, settings))
+            {
+                reader.Read();
+                while (!reader.EOF)
                 {
-                    string[] lines = ReadFileWithEncoding(filePath);
-                    
-                    // 获取第一行内容作为SFC（从第二位开始）
-                    if (lines.Length > 0)
+                    if (reader.NodeType == XmlNodeType.Element &&
+                        string.Equals(reader.LocalName, "Lotid", StringComparison.OrdinalIgnoreCase))
                     {
-                        string firstLine = lines[0].Trim();
-                        if (firstLine.Length > 1)
+                        sn = reader.ReadElementContentAsString();
+                        if (panelResult != null)
                         {
-                            sfc = firstLine.Substring(1).Trim();
-                        }
-                    }
-                    
-                    // 获取第10行内容作为result
-                    if (lines.Length >= 10)
-                    {
-                        result = lines[9].Trim();
-                    }
-                }
-                catch
-                {
-                    // 如果直接读取失败，尝试其他方法或记录错误
-                    MoveToFailFolder(filePath, "无法解析tar文件内容");
-                    return;
-                }
-                
-                if (string.IsNullOrWhiteSpace(sfc))
-                {
-                    MoveToFailFolder(filePath, "无法获取有效的SFC");
-                    return;
-                }
-                
-                logCallback(string.Format("解析文件 {0}: SFC={1}, Result={2}", fileName, sfc, result));
-                LogManager.WriteLog("文件解析", string.Format("文件={0}, SFC={1}, Result={2}", fileName, sfc, result));
-                
-                // 调用MES接口获取序列化数据
-                logCallback(string.Format("【API调用】准备调用GetSerializeData接口，SFC={0}", sfc));
-                var serializeResponse = await MESService.GetSerializeData(config.MesUrl, sfc, logCallback);
-                
-                if (serializeResponse == null || serializeResponse.LOAD_ID == null)
-                {
-                    MoveToFailFolder(filePath, string.Format("SFC {0} 在MES系统中不存在", sfc));
-                    return;
-                }
-                
-                // 处理返回的数据
-                if (serializeResponse.OLDSFC_DATA != null && serializeResponse.OLDSFC_DATA.Count > 0)
-                {
-                    bool allSuccess = true;
-                    
-                    foreach (var oldSfcData in serializeResponse.OLDSFC_DATA)
-                    {
-                        string dataValue = result == "TP" ? "PASS" : result == "TF" ? "FAIL" : "UNKNOWN";
-                        long unixTime = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
-                        string dataName = string.Format("{0}{1}", config.StationName, unixTime);
-                        
-                        logCallback(string.Format("【API调用】准备调用addSfcKey接口，SFC={0}, DataValue={1}", oldSfcData.newSfc, dataValue));
-                        
-                        var addSfcResponse = await MESService.AddSfcKey(
-                            config.MesUrl,
-                            oldSfcData.newSfc,
-                            config.StationName,
-                            oldSfcData.shoporder,
-                            config.LineName,
-                            dataName,
-                            dataValue,
-                            logCallback
-                        );
-                        
-                        if (addSfcResponse == null || addSfcResponse.RESULT != "PASS")
-                        {
-                            allSuccess = false;
                             break;
                         }
+                        continue;
                     }
-                    
-                    if (allSuccess)
+
+                    if (reader.NodeType == XmlNodeType.Element &&
+                        string.Equals(reader.LocalName, "PanleResult", StringComparison.OrdinalIgnoreCase))
                     {
-                        MoveToPassFolder(filePath, "所有接口调用成功");
+                        panelResult = reader.ReadElementContentAsString();
+                        if (sn != null)
+                        {
+                            break;
+                        }
+                        continue;
                     }
-                    else
-                    {
-                        MoveToFailFolder(filePath, "部分接口调用失败");
-                    }
+
+                    reader.Read();
                 }
-                else
-                {
-                    MoveToFailFolder(filePath, "未获取到有效的OLDSFC_DATA");
-                }
-            }
-            catch (Exception ex)
-            {
-                MoveToFailFolder(filePath, string.Format("处理异常: {0}", ex.Message));
-                LogManager.WriteErrorLog("处理tar文件异常", ex);
             }
         }
-        
+
+        private void FailXml(string filePath, string reason, Exception exception = null)
+        {
+            string fileName = Path.GetFileName(filePath);
+            string message = string.Format("XML文件处理失败: 文件={0}, 原因={1}", fileName, reason);
+            logCallback(message);
+
+            if (exception == null)
+            {
+                LogManager.WriteLog("XML文件处理失败", message);
+            }
+            else
+            {
+                LogManager.WriteErrorLog(message, exception);
+            }
+
+            MoveToFailFolder(filePath, reason);
+        }
+
+        private void LogApiFailure(string fileName, string sn, string reason)
+        {
+            string message = string.Format("MES接口调用失败: 文件={0}, SN={1}, 原因={2}", fileName, sn, reason);
+            logCallback(message);
+            LogManager.WriteLog("MES接口调用失败", message);
+        }
+
+        private static string BuildApiFailureReason(string apiName, MESService.MesApiResponse response)
+        {
+            if (response == null)
+            {
+                return string.Format("{0}接口未返回结果", apiName);
+            }
+
+            return string.Format("{0}接口失败: {1}", apiName, response.ErrorMessage);
+        }
+
+        private void MoveToErrorFolder(string filePath, string reason)
+        {
+            MoveFile(filePath, "error", "文件移动到error", reason);
+        }
+
         private void MoveToFailFolder(string filePath, string reason)
         {
-            try
-            {
-                // 检查源文件是否存在
-                if (!File.Exists(filePath))
-                {
-                    logCallback(string.Format("文件已被处理或不存在，跳过移动: {0}", filePath));
-                    return;
-                }
-                
-                string fileName = Path.GetFileName(filePath);
-                string failPath = GetUniqueFilePath(outputPath, "fail", fileName);
-                
-                File.Move(filePath, failPath);
-                
-                string message = string.Format("文件 {0} 移动到fail文件夹: {1}", fileName, reason);
-                logCallback(message);
-                LogManager.WriteLog("文件移动到fail", message);
-            }
-            catch (Exception ex)
-            {
-                // 只在非"文件未找到"错误时记录
-                if (!(ex is System.IO.FileNotFoundException))
-                {
-                    logCallback(string.Format("移动文件到fail文件夹时出错: {0}", ex.Message));
-                    LogManager.WriteErrorLog("移动文件到fail文件夹失败", ex);
-                }
-            }
+            MoveFile(filePath, "fail", "文件移动到fail", reason);
         }
-        
+
         private void MoveToPassFolder(string filePath, string reason)
         {
+            MoveFile(filePath, "pass", "文件移动到pass", reason);
+        }
+
+        private void MoveFile(string filePath, string subFolder, string action, string reason)
+        {
             try
             {
-                // 检查源文件是否存在
                 if (!File.Exists(filePath))
                 {
                     logCallback(string.Format("文件已被处理或不存在，跳过移动: {0}", filePath));
                     return;
                 }
-                
+
                 string fileName = Path.GetFileName(filePath);
-                string passPath = GetUniqueFilePath(outputPath, "pass", fileName);
-                
-                File.Move(filePath, passPath);
-                
-                string message = string.Format("文件 {0} 移动到pass文件夹: {1}", fileName, reason);
+                string targetPath = GetUniqueFilePath(outputPath, subFolder, fileName);
+                File.Move(filePath, targetPath);
+
+                string message = string.Format("文件 {0} 移动到{1}文件夹: {2}", fileName, subFolder, reason);
                 logCallback(message);
-                LogManager.WriteLog("文件移动到pass", message);
+                LogManager.WriteLog(action, message);
             }
             catch (Exception ex)
             {
-                // 只在非"文件未找到"错误时记录
-                if (!(ex is System.IO.FileNotFoundException))
-                {
-                    logCallback(string.Format("移动文件到pass文件夹时出错: {0}", ex.Message));
-                    LogManager.WriteErrorLog("移动文件到pass文件夹失败", ex);
-                }
+                logCallback(string.Format("移动文件到{0}文件夹时出错: {1}", subFolder, ex.Message));
+                LogManager.WriteErrorLog(string.Format("移动文件到{0}文件夹失败", subFolder), ex);
             }
         }
-        
-        /// <summary>
-        /// 获取唯一的文件路径，如果文件已存在则添加时间戳
-        /// </summary>
-        private string GetUniqueFilePath(string basePath, string subFolder, string fileName)
+
+        private static string GetUniqueFilePath(string basePath, string subFolder, string fileName)
         {
             string targetPath = Path.Combine(basePath, subFolder, fileName);
-            
-            // 如果文件不存在，直接返回
             if (!File.Exists(targetPath))
             {
                 return targetPath;
             }
-            
-            // 文件已存在，添加时间戳
-            string fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+
+            string fileNameWithoutExtension = Path.GetFileNameWithoutExtension(fileName);
             string extension = Path.GetExtension(fileName);
             string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff");
-            string newFileName = string.Format("{0}_{1}{2}", fileNameWithoutExt, timestamp, extension);
-            
-            return Path.Combine(basePath, subFolder, newFileName);
-        }
-        
-        /// <summary>
-        /// 使用多种编码尝试读取文件，支持ANSI和UTF-8
-        /// </summary>
-        private string[] ReadFileWithEncoding(string filePath)
-        {
-            // 尝试的编码顺序：UTF-8, GB2312(ANSI), Default
-            System.Text.Encoding[] encodings = new System.Text.Encoding[]
-            {
-                System.Text.Encoding.UTF8,
-                System.Text.Encoding.GetEncoding("GB2312"),
-                System.Text.Encoding.Default
-            };
-            
-            foreach (var encoding in encodings)
-            {
-                try
-                {
-                    string content = File.ReadAllText(filePath, encoding);
-                    
-                    // 检查是否有乱码（简单检测：检查是否有大量的?或特殊字符）
-                    int questionMarkCount = content.Count(c => c == '?');
-                    if (questionMarkCount < content.Length * 0.1) // 如果?少于10%，认为是正确的编码
-                    {
-                        return content.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-                    }
-                }
-                catch
-                {
-                    continue;
-                }
-            }
-            
-            // 如果所有编码都失败，使用默认编码
-            return File.ReadAllLines(filePath);
+            return Path.Combine(basePath, subFolder, string.Format("{0}_{1}{2}", fileNameWithoutExtension, timestamp, extension));
         }
     }
 }

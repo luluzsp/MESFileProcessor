@@ -1,158 +1,229 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 
 namespace MESFileProcessor
 {
     public class MESService
     {
-        private static readonly HttpClient httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-        
-        public class SerializeDataResponse
+        public const string MesApiUrl = "http://10.131.30.150:20009/zjyt/exi/me/bobcat";
+
+        private static readonly HttpClient httpClient = new HttpClient
         {
-            public int SERVICE_RUNTIME { get; set; }
-            public List<OldSfcData> OLDSFC_DATA { get; set; }
-            public int? LOAD_ID { get; set; }
-            public object NEWSFC_DATA { get; set; }
-            public string RESULT { get; set; }
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+
+        public class MesApiResponse
+        {
+            public bool Success { get; set; }
+            public string ResponseContent { get; set; }
+            public string ErrorMessage { get; set; }
         }
-        
-        public class OldSfcData
+
+        public static Task<MesApiResponse> StartProduct(
+            string stationName,
+            string stationId,
+            string sn,
+            Action<string> logCallback = null)
         {
-            public string createName { get; set; }
-            public string createTime { get; set; }
-            public int id { get; set; }
-            public string module { get; set; }
-            public string newSfc { get; set; }
-            public string oldSfc { get; set; }
-            public string shoporder { get; set; }
-            public string splitNum { get; set; }
-            public string station { get; set; }
+            return ExecuteGetAsync(
+                "START",
+                new Dictionary<string, string>
+                {
+                    { "station_name", stationName },
+                    { "c", "start" },
+                    { "sn", sn },
+                    { "station_id", stationId }
+                },
+                logCallback);
         }
-        
-        public class AddSfcKeyResponse
+
+        public static Task<MesApiResponse> AddRecord(
+            string stationName,
+            string stationId,
+            string sn,
+            DateTime startTime,
+            DateTime stopTime,
+            Action<string> logCallback = null)
         {
-            public string RESULT { get; set; }
+            return ExecuteGetAsync(
+                "ADD_RECORD",
+                new Dictionary<string, string>
+                {
+                    { "result", "PASS" },
+                    { "start_time", FormatMesTime(startTime) },
+                    { "c", "ADD_RECORD" },
+                    { "stop_time", FormatMesTime(stopTime) },
+                    { "station_id", stationId },
+                    { "test_station_name", stationName },
+                    { "sn", sn }
+                },
+                logCallback);
         }
-        
-        public static async Task<SerializeDataResponse> GetSerializeData(string mesUrl, string sfc, Action<string> logCallback = null)
+
+        public static Task<MesApiResponse> LogNc(
+            string ncCode,
+            string stationName,
+            string stationId,
+            string sn,
+            Action<string> logCallback = null)
         {
+            return ExecuteGetAsync(
+                "LOGNC",
+                new Dictionary<string, string>
+                {
+                    { "nc_code", ncCode },
+                    { "c", "LOGNC" },
+                    { "user_id", "bobcat" },
+                    { "station_id", stationId },
+                    { "test_station_name", stationName },
+                    { "sn", sn }
+                },
+                logCallback);
+        }
+
+        private static async Task<MesApiResponse> ExecuteGetAsync(
+            string apiName,
+            IDictionary<string, string> parameters,
+            Action<string> logCallback)
+        {
+            string url = BuildUrl(parameters);
+
             try
             {
-                var paramObj = new
+                WriteUiLog(logCallback, string.Format("【{0}请求URL】{1}", apiName, url));
+
+                using (HttpResponseMessage response = await httpClient.GetAsync(url))
                 {
-                    LOGIN_ID = "-1",
-                    CLIENT_ID = "1",
-                    SFC = sfc
-                };
-                
-                string parameters = JsonConvert.SerializeObject(paramObj);
-                string url = string.Format("{0}?method=GetSerializeData&param={1}", mesUrl, parameters);
-                
-                // 在界面显示完整请求URL
-                if (logCallback != null)
-                {
-                    logCallback(string.Format("【请求URL】{0}", url));
-                }
-                
-                var content = new StringContent("", Encoding.UTF8, "application/json");
-                HttpResponseMessage response = await httpClient.PostAsync(url, content);
-                
-                string responseContent = await response.Content.ReadAsStringAsync();
-                
-                // 在界面显示完整响应信息
-                if (logCallback != null)
-                {
-                    logCallback(string.Format("【响应状态】{0} ({1})", response.StatusCode, (int)response.StatusCode));
-                    logCallback(string.Format("【响应内容】{0}", responseContent.Length > 500 ? responseContent.Substring(0, 500) + "..." : responseContent));
-                }
-                
-                LogManager.WriteApiLog(url, parameters, responseContent);
-                
-                if (response.IsSuccessStatusCode)
-                {
-                    var result = JsonConvert.DeserializeObject<SerializeDataResponse>(responseContent);
-                    return result;
-                }
-                else
-                {
-                    LogManager.WriteLog("API调用失败", string.Format("状态码: {0}, 响应: {1}", response.StatusCode, responseContent));
-                    return null;
+                    string responseContent = await response.Content.ReadAsStringAsync();
+                    string trimmedContent = (responseContent ?? string.Empty).Trim();
+                    bool businessSuccess = trimmedContent.StartsWith("0 SFC_OK", StringComparison.OrdinalIgnoreCase);
+                    bool success = response.IsSuccessStatusCode && businessSuccess;
+
+                    WriteUiLog(logCallback, string.Format(
+                        "【{0}响应状态】{1} ({2})",
+                        apiName,
+                        response.StatusCode,
+                        (int)response.StatusCode));
+                    WriteUiLog(logCallback, string.Format(
+                        "【{0}响应内容】{1}",
+                        apiName,
+                        LimitLogText(responseContent)));
+                    LogManager.WriteApiLog(url, BuildParameterLog(parameters), responseContent);
+
+                    if (success)
+                    {
+                        return new MesApiResponse
+                        {
+                            Success = true,
+                            ResponseContent = responseContent,
+                            ErrorMessage = string.Empty
+                        };
+                    }
+
+                    string errorMessage;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        errorMessage = string.Format("HTTP状态码异常: {0} ({1})", response.StatusCode, (int)response.StatusCode);
+                    }
+                    else if (string.IsNullOrWhiteSpace(trimmedContent))
+                    {
+                        errorMessage = "MES响应为空";
+                    }
+                    else
+                    {
+                        errorMessage = string.Format("MES业务响应失败: {0}", LimitLogText(trimmedContent));
+                    }
+
+                    WriteUiLog(logCallback, string.Format("【{0}失败】{1}", apiName, errorMessage));
+                    LogManager.WriteLog(string.Format("{0}接口调用失败", apiName), errorMessage);
+
+                    return new MesApiResponse
+                    {
+                        Success = false,
+                        ResponseContent = responseContent,
+                        ErrorMessage = errorMessage
+                    };
                 }
             }
             catch (Exception ex)
             {
-                if (logCallback != null)
+                string errorMessage = string.Format("{0}接口调用异常: {1}", apiName, ex.Message);
+                WriteUiLog(logCallback, string.Format("【API异常】{0}", errorMessage));
+                LogManager.WriteErrorLog(errorMessage, ex);
+
+                return new MesApiResponse
                 {
-                    logCallback(string.Format("【API异常】GetSerializeData调用失败: {0}", ex.Message));
-                }
-                LogManager.WriteErrorLog("GetSerializeData API调用异常", ex);
-                return null;
+                    Success = false,
+                    ResponseContent = string.Empty,
+                    ErrorMessage = errorMessage
+                };
             }
         }
-        
-        public static async Task<AddSfcKeyResponse> AddSfcKey(string mesUrl, string sfc, string stationName, 
-            string shoporder, string lineName, string dataName, string dataValue, Action<string> logCallback = null)
+
+        private static string BuildUrl(IDictionary<string, string> parameters)
         {
-            try
+            StringBuilder builder = new StringBuilder(MesApiUrl);
+            builder.Append('?');
+            bool first = true;
+
+            foreach (KeyValuePair<string, string> parameter in parameters)
             {
-                var paramObj = new
+                if (!first)
                 {
-                    LOGIN_ID = "-1",
-                    CLIENT_ID = "1",
-                    SFC = sfc,
-                    STATION_NAME = stationName,
-                    SHOPORDER = shoporder,
-                    LINE = lineName,
-                    DATA_NAME = dataName,
-                    DATA_VALUE = dataValue
-                };
-                
-                string parameters = JsonConvert.SerializeObject(paramObj);
-                string url = string.Format("{0}?method=AddSfcKey&param={1}", mesUrl, parameters);
-                
-                // 在界面显示完整请求URL
-                if (logCallback != null)
-                {
-                    logCallback(string.Format("【请求URL】{0}", url));
+                    builder.Append('&');
                 }
-                
-                var content = new StringContent("", Encoding.UTF8, "application/json");
-                HttpResponseMessage response = await httpClient.PostAsync(url, content);
-                
-                string responseContent = await response.Content.ReadAsStringAsync();
-                
-                // 在界面显示完整响应信息
-                if (logCallback != null)
-                {
-                    logCallback(string.Format("【响应状态】{0} ({1})", response.StatusCode, (int)response.StatusCode));
-                    logCallback(string.Format("【响应内容】{0}", responseContent.Length > 500 ? responseContent.Substring(0, 500) + "..." : responseContent));
-                }
-                
-                LogManager.WriteApiLog(url, parameters, responseContent);
-                
-                if (response.IsSuccessStatusCode)
-                {
-                    var result = JsonConvert.DeserializeObject<AddSfcKeyResponse>(responseContent);
-                    return result;
-                }
-                else
-                {
-                    LogManager.WriteLog("addSfcKey API调用失败", string.Format("状态码: {0}, 响应: {1}", response.StatusCode, responseContent));
-                    return null;
-                }
+
+                builder.Append(Uri.EscapeDataString(parameter.Key));
+                builder.Append('=');
+                builder.Append(Uri.EscapeDataString(parameter.Value ?? string.Empty));
+                first = false;
             }
-            catch (Exception ex)
+
+            return builder.ToString();
+        }
+
+        private static string BuildParameterLog(IDictionary<string, string> parameters)
+        {
+            StringBuilder builder = new StringBuilder();
+            foreach (KeyValuePair<string, string> parameter in parameters)
             {
-                if (logCallback != null)
+                if (builder.Length > 0)
                 {
-                    logCallback(string.Format("【API异常】addSfcKey调用失败: {0}", ex.Message));
+                    builder.Append(", ");
                 }
-                LogManager.WriteErrorLog("addSfcKey API调用异常", ex);
-                return null;
+
+                builder.Append(parameter.Key);
+                builder.Append('=');
+                builder.Append(parameter.Value);
+            }
+
+            return builder.ToString();
+        }
+
+        private static string FormatMesTime(DateTime value)
+        {
+            return value.ToString("yyyy/M/d H:mm:ss", CultureInfo.InvariantCulture);
+        }
+
+        private static string LimitLogText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return "<空>";
+            }
+
+            return text.Length > 1000 ? text.Substring(0, 1000) + "..." : text;
+        }
+
+        private static void WriteUiLog(Action<string> logCallback, string message)
+        {
+            if (logCallback != null)
+            {
+                logCallback(message);
             }
         }
     }
