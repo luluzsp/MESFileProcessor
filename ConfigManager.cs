@@ -45,8 +45,8 @@ namespace MESFileProcessor
         
         public static string GetConfigDisplayString(Config config)
         {
-            return string.Format("工站名称: {0} | 工站ID: {1} | 不良代码: {2}",
-                config.StationName, config.StationId, config.NcCode);
+            return string.Format("工站名称: {0} | 工位: {1} | 工号: {2}",
+                config.StationName, config.WorkStation, config.OperatorId);
         }
     }
 }

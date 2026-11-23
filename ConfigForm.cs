@@ -8,15 +8,16 @@ namespace MESFileProcessor
     public partial class ConfigForm : Form
     {
         private TextBox txtStationName;
-        private TextBox txtStationId;
-        private TextBox txtNcCode;
+        private TextBox txtWorkStation;
+        private TextBox txtOperatorId;
         private TextBox txtComponentNames;
         private Button btnSave;
         private Button btnCancel;
         private Label lblStationName;
-        private Label lblStationId;
-        private Label lblNcCode;
+        private Label lblWorkStation;
+        private Label lblOperatorId;
         private Label lblComponentNames;
+        private Label lblComponentExample;
 
         public Config CurrentConfig { get; private set; }
 
@@ -30,7 +31,9 @@ namespace MESFileProcessor
                 StationName = config.StationName,
                 StationId = config.StationId,
                 NcCode = config.NcCode,
-                ComponentNames = config.ComponentNames
+                ComponentNames = config.ComponentNames,
+                WorkStation = config.WorkStation,
+                OperatorId = config.OperatorId
             };
 
             InitializeComponent();
@@ -40,15 +43,16 @@ namespace MESFileProcessor
         private void InitializeComponent()
         {
             txtStationName = new TextBox();
-            txtStationId = new TextBox();
-            txtNcCode = new TextBox();
+            txtWorkStation = new TextBox();
+            txtOperatorId = new TextBox();
             txtComponentNames = new TextBox();
             btnSave = new Button();
             btnCancel = new Button();
             lblStationName = new Label();
-            lblStationId = new Label();
-            lblNcCode = new Label();
+            lblWorkStation = new Label();
+            lblOperatorId = new Label();
             lblComponentNames = new Label();
+            lblComponentExample = new Label();
 
             SuspendLayout();
 
@@ -63,12 +67,17 @@ namespace MESFileProcessor
 
             ConfigureLabel(lblStationName, "工站名称:", 30);
             ConfigureTextBox(txtStationName, 30);
-            ConfigureLabel(lblStationId, "工站ID:", 85);
-            ConfigureTextBox(txtStationId, 85);
-            ConfigureLabel(lblNcCode, "不良代码:", 140);
-            ConfigureTextBox(txtNcCode, 140);
+            ConfigureLabel(lblWorkStation, "工位:", 85);
+            ConfigureTextBox(txtWorkStation, 85);
+            ConfigureLabel(lblOperatorId, "工号:", 140);
+            ConfigureTextBox(txtOperatorId, 140);
+            txtOperatorId.ReadOnly = true;
             ConfigureLabel(lblComponentNames, "组件信息:", 195);
             ConfigureTextBox(txtComponentNames, 195);
+            lblComponentExample.Text = "示例：PCB1_BC;U56_BC（按XML标签原名填写）";
+            lblComponentExample.Location = new Point(140, 225);
+            lblComponentExample.Size = new Size(300, 28);
+            lblComponentExample.ForeColor = Color.DimGray;
 
             btnSave.Text = "保存";
             btnSave.Location = new Point(250, 270);
@@ -92,12 +101,13 @@ namespace MESFileProcessor
 
             Controls.Add(lblStationName);
             Controls.Add(txtStationName);
-            Controls.Add(lblStationId);
-            Controls.Add(txtStationId);
-            Controls.Add(lblNcCode);
-            Controls.Add(txtNcCode);
+            Controls.Add(lblWorkStation);
+            Controls.Add(txtWorkStation);
+            Controls.Add(lblOperatorId);
+            Controls.Add(txtOperatorId);
             Controls.Add(lblComponentNames);
             Controls.Add(txtComponentNames);
+            Controls.Add(lblComponentExample);
             Controls.Add(btnSave);
             Controls.Add(btnCancel);
 
@@ -124,8 +134,8 @@ namespace MESFileProcessor
         private void LoadConfig()
         {
             txtStationName.Text = CurrentConfig.StationName;
-            txtStationId.Text = CurrentConfig.StationId;
-            txtNcCode.Text = CurrentConfig.NcCode;
+            txtWorkStation.Text = CurrentConfig.WorkStation;
+            txtOperatorId.Text = CurrentConfig.OperatorId;
             txtComponentNames.Text = CurrentConfig.ComponentNames;
         }
 
@@ -140,17 +150,10 @@ namespace MESFileProcessor
                     return;
                 }
 
-                if (string.IsNullOrWhiteSpace(txtStationId.Text))
+                if (string.IsNullOrWhiteSpace(txtWorkStation.Text))
                 {
-                    MessageBox.Show("请输入工站ID", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    txtStationId.Focus();
-                    return;
-                }
-
-                if (string.IsNullOrWhiteSpace(txtNcCode.Text))
-                {
-                    MessageBox.Show("请输入不良代码", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    txtNcCode.Focus();
+                    MessageBox.Show("请输入工位", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    txtWorkStation.Focus();
                     return;
                 }
 
@@ -164,8 +167,7 @@ namespace MESFileProcessor
                 }
 
                 CurrentConfig.StationName = txtStationName.Text.Trim();
-                CurrentConfig.StationId = txtStationId.Text.Trim();
-                CurrentConfig.NcCode = txtNcCode.Text.Trim();
+                CurrentConfig.WorkStation = txtWorkStation.Text.Trim();
                 CurrentConfig.ComponentNames = txtComponentNames.Text.Trim();
                 ConfigManager.SaveConfig(CurrentConfig);
 

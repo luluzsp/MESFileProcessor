@@ -29,7 +29,7 @@ namespace MESFileProcessor
             InitializeComponent();
             UpdateConfigDisplay();
             
-            LogManager.WriteLog("程序启动", "成都汽车电子项目X-Ray数据上传软件V1.1启动");
+            LogManager.WriteLog("程序启动", "成都汽车电子AOI上传软件V1.0启动");
         }
         
         private void InitializeComponent()
@@ -159,7 +159,7 @@ namespace MESFileProcessor
             this.lblProgramInfo.Name = "lblProgramInfo";
             this.lblProgramInfo.Size = new System.Drawing.Size(850, 42);
             this.lblProgramInfo.TabIndex = 11;
-            this.lblProgramInfo.Text = "成都汽车电子项目X-Ray数据上传软件V1.1";
+            this.lblProgramInfo.Text = "成都汽车电子AOI上传软件V1.0";
             this.lblProgramInfo.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
             // 
             // lblDataPath
@@ -211,7 +211,7 @@ namespace MESFileProcessor
             this.MinimumSize = new System.Drawing.Size(900, 650);
             this.Name = "MainForm";
             this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
-            this.Text = "成都汽车电子项目X-Ray数据上传软件V1.1";
+            this.Text = "成都汽车电子AOI上传软件V1.0";
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -365,15 +365,15 @@ namespace MESFileProcessor
                     return;
                 }
                 
-                if (string.IsNullOrWhiteSpace(currentConfig.StationId))
+                if (string.IsNullOrWhiteSpace(currentConfig.WorkStation))
                 {
-                    MessageBox.Show("请先配置工站ID", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("请先配置工位", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
-                if (string.IsNullOrWhiteSpace(currentConfig.NcCode))
+                if (string.IsNullOrWhiteSpace(currentConfig.OperatorId))
                 {
-                    MessageBox.Show("请先配置不良代码", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show("请重新启动并输入工号", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
 
@@ -438,7 +438,7 @@ namespace MESFileProcessor
                 StopMonitoring();
             }
             
-            LogManager.WriteLog("程序关闭", "成都汽车电子项目X-Ray数据上传软件V1.1关闭");
+            LogManager.WriteLog("程序关闭", "成都汽车电子AOI上传软件V1.0关闭");
             base.OnFormClosing(e);
         }
         

@@ -27,25 +27,34 @@ namespace MESFileProcessor
 
         public class SerializeDataResponse
         {
-            public List<OldSfcData> OLDSFC_DATA { get; set; }
+            public SfcInfo SFC { get; set; }
             public string RESULT { get; set; }
+            public string MESSAGE { get; set; }
         }
 
-        public class OldSfcData
+        public class SfcInfo
         {
-            public string shoporder { get; set; }
+            public string SHOPORDER { get; set; }
+            public string SCHEDULING_ID { get; set; }
+            public string LINE { get; set; }
         }
 
-        public static async Task<SerializeDataResponse> GetSerializeData(string sn, Action<string> logCallback)
+        public static async Task<SerializeDataResponse> GetSfcInfo(string sn, Action<string> logCallback)
         {
             string parameters = JsonConvert.SerializeObject(new { LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn });
-            string response = await ExecuteComponentPost("GetSerializeData", parameters, logCallback);
+            string response = await ExecuteMes2Get("GetSfcInfo", parameters, logCallback);
             if (response == null) return null;
-            try { return JsonConvert.DeserializeObject<SerializeDataResponse>(response); }
+            try
+            {
+                var result = JsonConvert.DeserializeObject<SerializeDataResponse>(response);
+                if (result != null && result.RESULT == "PASS" && result.SFC != null) return result;
+                WriteUiLog(logCallback, "GetSfcInfo失败: " + (result == null ? "响应为空" : result.MESSAGE));
+                return null;
+            }
             catch (Exception ex)
             {
-                WriteUiLog(logCallback, "GetSerializeData响应解析失败: " + ex.Message);
-                LogManager.WriteErrorLog("GetSerializeData响应解析失败", ex);
+                WriteUiLog(logCallback, "GetSfcInfo响应解析失败: " + ex.Message);
+                LogManager.WriteErrorLog("GetSfcInfo响应解析失败", ex);
                 return null;
             }
         }
@@ -59,7 +68,7 @@ namespace MESFileProcessor
                 SHOPORDER = shoporder, DATA_NAME = dataName, DATA_VALUE = dataValue,
                 IS_FINISH = "1", QTY = "0", IS_UPDATE = true
             });
-            string response = await ExecuteComponentPost("AddSfcKey", parameters, logCallback);
+            string response = await ExecuteMes2Get("AddSfcKey", parameters, logCallback);
             if (response == null) return false;
             try
             {
@@ -76,14 +85,57 @@ namespace MESFileProcessor
 
         private class AddSfcKeyResponse { public string RESULT { get; set; } }
 
-        private static async Task<string> ExecuteComponentPost(string method, string parameters, Action<string> logCallback)
+        public static async Task<MesApiResponse> Complete(string sn, string schedulingId,
+            string stationName, string workStation, string operatorId, string ncContext,
+            Action<string> logCallback)
+        {
+            bool isNg = ncContext != null;
+            object parameters = isNg
+                ? (object)new
+                {
+                    LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn, SCHEDULING_ID = schedulingId,
+                    STATION_NAME = stationName, NC_CODE = "NG", NC_CONTEXT = ncContext,
+                    NC_TYPE = "NG", TEST_TIME = "0", BOARD_COUNT = "1",
+                    WORK_STATION = workStation, LOG_OPERATOR = operatorId
+                }
+                : new
+                {
+                    LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn, SCHEDULING_ID = schedulingId,
+                    STATION_NAME = stationName, TEST_TIME = "0", BOARD_COUNT = "1",
+                    WORK_STATION = workStation, LOG_OPERATOR = operatorId
+                };
+            string method = isNg ? "NcComplete" : "Complete";
+            string response = await ExecuteMes2Get(method, JsonConvert.SerializeObject(parameters), logCallback);
+            return ParseMes2Result(method, response, logCallback);
+        }
+
+        private static MesApiResponse ParseMes2Result(string method, string response, Action<string> logCallback)
+        {
+            if (response == null) return new MesApiResponse { Success = false, ErrorMessage = method + "请求失败" };
+            try
+            {
+                var result = JsonConvert.DeserializeObject<Mes2Result>(response);
+                bool success = result != null && string.Equals(result.RESULT, "PASS", StringComparison.OrdinalIgnoreCase);
+                if (!success) WriteUiLog(logCallback, method + "失败: " + (result == null ? response : result.MESSAGE));
+                return new MesApiResponse { Success = success, ResponseContent = response,
+                    ErrorMessage = success ? string.Empty : (result == null ? response : result.MESSAGE) };
+            }
+            catch (Exception ex)
+            {
+                LogManager.WriteErrorLog(method + "响应解析失败", ex);
+                return new MesApiResponse { Success = false, ErrorMessage = ex.Message };
+            }
+        }
+
+        private class Mes2Result { public string RESULT { get; set; } public string MESSAGE { get; set; } }
+
+        private static async Task<string> ExecuteMes2Get(string method, string parameters, Action<string> logCallback)
         {
             string url = ComponentApiUrl + "?method=" + method + "&param=" + Uri.EscapeDataString(parameters);
             try
             {
                 WriteUiLog(logCallback, string.Format("【{0}请求URL】{1}", method, url));
-                using (var body = new StringContent("", Encoding.UTF8, "application/json"))
-                using (var response = await httpClient.PostAsync(url, body))
+                using (var response = await httpClient.GetAsync(url))
                 {
                     string content = await response.Content.ReadAsStringAsync();
                     LogManager.WriteApiLog(url, parameters, content);
@@ -101,22 +153,19 @@ namespace MESFileProcessor
             }
         }
 
-        public static Task<MesApiResponse> StartProduct(
-            string stationName,
-            string stationId,
-            string sn,
-            Action<string> logCallback = null)
+        public static async Task<MesApiResponse> StartProduct(string sn, string schedulingId,
+            string stationName, string line, string workStation, string operatorId,
+            Action<string> logCallback)
         {
-            return ExecuteGetAsync(
-                "START",
-                new Dictionary<string, string>
-                {
-                    { "station_name", stationName },
-                    { "c", "start" },
-                    { "sn", sn },
-                    { "station_id", stationId }
-                },
-                logCallback);
+            string parameters = JsonConvert.SerializeObject(new
+            {
+                LOGIN_ID = "-1", CLIENT_ID = "1", SFC = sn,
+                SCHEDULING_ID = schedulingId, STATION_NAME = stationName,
+                LINE = line, BOARD_COUNT = "1", WORK_STATION = workStation,
+                LOG_OPERATOR = operatorId
+            });
+            string response = await ExecuteMes2Get("Start", parameters, logCallback);
+            return ParseMes2Result("Start", response, logCallback);
         }
 
         public static Task<MesApiResponse> AddRecord(

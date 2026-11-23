@@ -9,6 +9,8 @@ namespace MESFileProcessor
         public string StationId { get; set; }
         public string NcCode { get; set; }
         public string ComponentNames { get; set; }
+        public string WorkStation { get; set; }
+        public string OperatorId { get; set; }
 
         public Config()
         {
@@ -18,6 +20,8 @@ namespace MESFileProcessor
             StationId = string.Empty;
             NcCode = string.Empty;
             ComponentNames = string.Empty;
+            WorkStation = string.Empty;
+            OperatorId = string.Empty;
         }
     }
 }

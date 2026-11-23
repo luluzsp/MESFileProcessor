@@ -157,15 +157,15 @@ namespace MESFileProcessor
 
         private async Task ProcessXmlFile(string filePath)
         {
-            DateTime processStartTime = DateTime.Now;
             string fileName = Path.GetFileName(filePath);
             string sn;
             string panelResult;
             Dictionary<string, string> components;
+            string ncContext;
 
             try
             {
-                ReadXmlFields(filePath, out sn, out panelResult, out components);
+                ReadXmlFields(filePath, out sn, out panelResult, out components, out ncContext);
             }
             catch (Exception ex)
             {
@@ -195,6 +195,12 @@ namespace MESFileProcessor
                 return;
             }
 
+            if (!isPassResult && string.IsNullOrWhiteSpace(ncContext))
+            {
+                FailXml(filePath, "NG文件缺少NC/ComponentPos，无法调用NcComplete");
+                return;
+            }
+
             foreach (string requiredName in (config.ComponentNames ?? string.Empty)
                 .Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
                 .Select(name => name.Trim()).Where(name => name.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -216,12 +222,22 @@ namespace MESFileProcessor
             logCallback(parsedMessage);
             LogManager.WriteLog("XML解析成功", parsedMessage);
 
+            var sfcInfo = await MESService.GetSfcInfo(sn, logCallback);
+            if (sfcInfo == null || sfcInfo.SFC == null ||
+                string.IsNullOrWhiteSpace(sfcInfo.SFC.SCHEDULING_ID) ||
+                string.IsNullOrWhiteSpace(sfcInfo.SFC.SHOPORDER) ||
+                string.IsNullOrWhiteSpace(sfcInfo.SFC.LINE))
+            {
+                string reason = "GetSfcInfo失败或缺少SCHEDULING_ID/SHOPORDER/LINE";
+                LogApiFailure(fileName, sn, reason);
+                MoveToFailFolder(filePath, reason);
+                return;
+            }
+
             logCallback(string.Format("【API调用】准备调用START接口，SN={0}", sn));
             MESService.MesApiResponse startResponse = await MESService.StartProduct(
-                config.StationName,
-                config.StationId,
-                sn,
-                logCallback);
+                sn, sfcInfo.SFC.SCHEDULING_ID, config.StationName,
+                sfcInfo.SFC.LINE, config.WorkStation, config.OperatorId, logCallback);
 
             if (startResponse == null || !startResponse.Success)
             {
@@ -231,32 +247,10 @@ namespace MESFileProcessor
                 return;
             }
 
-            MESService.MesApiResponse stationResponse;
-            string finalApiName;
-
-            if (isPassResult)
-            {
-                finalApiName = "ADD_RECORD";
-                logCallback(string.Format("【API调用】START成功，准备调用ADD_RECORD接口，SN={0}", sn));
-                stationResponse = await MESService.AddRecord(
-                    config.StationName,
-                    config.StationId,
-                    sn,
-                    processStartTime,
-                    DateTime.Now,
-                    logCallback);
-            }
-            else
-            {
-                finalApiName = "LOGNC";
-                logCallback(string.Format("【API调用】START成功，准备调用LOGNC接口，SN={0}, NcCode={1}", sn, config.NcCode));
-                stationResponse = await MESService.LogNc(
-                    config.NcCode,
-                    config.StationName,
-                    config.StationId,
-                    sn,
-                    logCallback);
-            }
+            string finalApiName = isPassResult ? "Complete" : "NcComplete";
+            MESService.MesApiResponse stationResponse = await MESService.Complete(
+                sn, sfcInfo.SFC.SCHEDULING_ID, config.StationName,
+                config.WorkStation, config.OperatorId, isPassResult ? null : ncContext, logCallback);
 
             if (stationResponse == null || !stationResponse.Success)
             {
@@ -273,14 +267,10 @@ namespace MESFileProcessor
             if (components.Count > 0)
             {
                 // 工单查询和组件上传属于过站后的附加步骤，不改变过站结果。
-                var serialized = await MESService.GetSerializeData(sn, logCallback);
-                string shoporder = serialized == null || serialized.OLDSFC_DATA == null
-                    ? null
-                    : serialized.OLDSFC_DATA.Select(item => item.shoporder)
-                        .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+                string shoporder = sfcInfo.SFC.SHOPORDER;
                 if (string.IsNullOrWhiteSpace(shoporder))
                 {
-                    string message = string.Format("GetSerializeData失败或缺少SHOPORDER: 文件={0}, SN={1}，跳过组件上传", fileName, sn);
+                    string message = string.Format("GetSfcInfo失败或缺少SHOPORDER: 文件={0}, SN={1}，跳过组件上传", fileName, sn);
                     logCallback(message);
                     LogManager.WriteLog("组件上传失败", message);
                 }
@@ -303,11 +293,12 @@ namespace MESFileProcessor
         }
 
         private static void ReadXmlFields(string filePath, out string sn, out string panelResult,
-            out Dictionary<string, string> components)
+            out Dictionary<string, string> components, out string ncContext)
         {
             sn = null;
             panelResult = null;
             components = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            ncContext = null;
 
             XmlReaderSettings settings = new XmlReaderSettings
             {
@@ -319,8 +310,21 @@ namespace MESFileProcessor
             using (XmlReader reader = XmlReader.Create(filePath, settings))
             {
                 reader.Read();
+                bool inNc = false;
                 while (!reader.EOF)
                 {
+                    if (reader.NodeType == XmlNodeType.Element && reader.LocalName == "NC") inNc = true;
+                    if (reader.NodeType == XmlNodeType.EndElement && reader.LocalName == "NC") inNc = false;
+                    if (inNc && ncContext == null && reader.NodeType == XmlNodeType.Element &&
+                        reader.LocalName == "ComponentPos")
+                    {
+                        string position = reader.ReadElementContentAsString().Trim();
+                        if (!string.IsNullOrWhiteSpace(position))
+                        {
+                            ncContext = position;
+                        }
+                        continue;
+                    }
                     if (reader.NodeType == XmlNodeType.Element &&
                         string.Equals(reader.LocalName, "Lotid", StringComparison.OrdinalIgnoreCase))
                     {
